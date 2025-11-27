@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Build Docker image and push to ECR
+# Build Docker image and push to Nexus Repository
 #
 
 set -e
@@ -12,22 +12,27 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # Configuration - UPDATE THESE VALUES
-AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-123456789012}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
-ECR_REPOSITORY="${ECR_REPOSITORY:-abinitio-batch-service}"
+NEXUS_REGISTRY="${NEXUS_REGISTRY:-nexus.your-domain.com:8082}"
+NEXUS_REPOSITORY="${NEXUS_REPOSITORY:-docker-hosted}"
+IMAGE_NAME="${IMAGE_NAME:-abinitio-batch-service}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
-ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-FULL_IMAGE_NAME="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+# Nexus credentials (use environment variables or prompt)
+NEXUS_USERNAME="${NEXUS_USERNAME:-}"
+NEXUS_PASSWORD="${NEXUS_PASSWORD:-}"
+
+FULL_IMAGE_NAME="${NEXUS_REGISTRY}/${NEXUS_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Build and Push Docker Image to ECR${NC}"
+echo -e "${GREEN}Build and Push Docker Image to Nexus${NC}"
 echo -e "${GREEN}========================================${NC}"
+echo -e "Registry: ${NEXUS_REGISTRY}"
+echo -e "Repository: ${NEXUS_REPOSITORY}"
 echo -e "Image: ${FULL_IMAGE_NAME}"
 echo -e "${GREEN}========================================${NC}"
 
 # Check prerequisites
-echo -e "\n${YELLOW}[1/5] Checking prerequisites...${NC}"
+echo -e "\n${YELLOW}[1/4] Checking prerequisites...${NC}"
 
 if ! command -v docker &> /dev/null; then
     echo -e "${RED}✗ Docker not found. Please install Docker.${NC}"
@@ -35,46 +40,43 @@ if ! command -v docker &> /dev/null; then
 fi
 echo -e "${GREEN}✓ Docker found${NC}"
 
-if ! command -v aws &> /dev/null; then
-    echo -e "${RED}✗ AWS CLI not found. Please install AWS CLI.${NC}"
-    exit 1
+# Get Nexus credentials if not set
+if [ -z "$NEXUS_USERNAME" ]; then
+    read -p "Enter Nexus username: " NEXUS_USERNAME
 fi
-echo -e "${GREEN}✓ AWS CLI found${NC}"
 
-# Login to ECR
-echo -e "\n${YELLOW}[2/5] Logging in to Amazon ECR...${NC}"
-aws ecr get-login-password --region ${AWS_REGION} | \
-    docker login --username AWS --password-stdin ${ECR_REGISTRY}
-echo -e "${GREEN}✓ Logged in to ECR${NC}"
+if [ -z "$NEXUS_PASSWORD" ]; then
+    read -sp "Enter Nexus password: " NEXUS_PASSWORD
+    echo
+fi
 
-# Create ECR repository if it doesn't exist
-echo -e "\n${YELLOW}[3/5] Ensuring ECR repository exists...${NC}"
-if ! aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} &> /dev/null; then
-    echo "Creating ECR repository: ${ECR_REPOSITORY}"
-    aws ecr create-repository \
-        --repository-name ${ECR_REPOSITORY} \
-        --region ${AWS_REGION} \
-        --image-scanning-configuration scanOnPush=true
-    echo -e "${GREEN}✓ ECR repository created${NC}"
+# Login to Nexus Docker registry
+echo -e "\n${YELLOW}[2/4] Logging in to Nexus Docker registry...${NC}"
+echo "$NEXUS_PASSWORD" | docker login --username "$NEXUS_USERNAME" --password-stdin ${NEXUS_REGISTRY}
+
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✓ Logged in to Nexus${NC}"
 else
-    echo -e "${GREEN}✓ ECR repository already exists${NC}"
+    echo -e "${RED}✗ Failed to login to Nexus${NC}"
+    exit 1
 fi
 
 # Build Docker image
-echo -e "\n${YELLOW}[4/5] Building Docker image...${NC}"
-docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
-docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${FULL_IMAGE_NAME}
+echo -e "\n${YELLOW}[3/4] Building Docker image...${NC}"
+docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${FULL_IMAGE_NAME}
 echo -e "${GREEN}✓ Docker image built${NC}"
 
-# Push to ECR
-echo -e "\n${YELLOW}[5/5] Pushing image to ECR...${NC}"
+# Push to Nexus
+echo -e "\n${YELLOW}[4/4] Pushing image to Nexus...${NC}"
 docker push ${FULL_IMAGE_NAME}
-echo -e "${GREEN}✓ Image pushed to ECR${NC}"
+echo -e "${GREEN}✓ Image pushed to Nexus${NC}"
 
 echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}Build and push completed!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "\nImage URI: ${FULL_IMAGE_NAME}"
 echo -e "\nNext steps:"
-echo -e "  1. Update k8s/abinitio-batch-job.yaml with image URI"
-echo -e "  2. Deploy to EKS: ./scripts/deploy-to-eks.sh"
+echo -e "  1. Update IAC repo's values-dev.yaml with image URI"
+echo -e "  2. Or update k8s/abinitio-batch-job.yaml for local testing"
+echo -e "  3. Deploy: ./scripts/deploy-to-eks.sh"

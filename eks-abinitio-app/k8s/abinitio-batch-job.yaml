@@ -30,9 +30,9 @@ spec:
 
       containers:
       - name: batch-service
-        # Replace with your actual ECR image
-        # Example: 123456789012.dkr.ecr.us-east-1.amazonaws.com/abinitio-batch-service:latest
-        image: <YOUR_ECR_REGISTRY>/abinitio-batch-service:latest
+        # Replace with your actual Nexus image
+        # Example: nexus.your-domain.com:8082/docker-hosted/abinitio-batch-service:latest
+        image: <NEXUS_REGISTRY>/<REPOSITORY>/abinitio-batch-service:latest
         imagePullPolicy: Always
 
         # Load environment from ConfigMap

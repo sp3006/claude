@@ -120,11 +120,10 @@ kubectl logs -f job/abinitio-status-job -n bi-abi-apps-dev
 
 - **Python 3.11+**
 - **Docker**
-- **AWS CLI** configured with appropriate credentials
 - **kubectl** installed and configured
 - **Access to EKS cluster** with Okta OIDC
 - **Permissions** to `bi-abi-apps-dev` and `abinitio-operator` namespaces
-- **ECR repository** for storing Docker images
+- **Nexus Docker repository** credentials for storing Docker images
 
 ## Quick Start
 
@@ -157,26 +156,28 @@ kubectl get pods -n bi-abi-apps-dev
 ### Step 3: Build and Push Docker Image
 
 ```bash
-# Configure AWS account
-export AWS_ACCOUNT_ID="123456789012"
-export AWS_REGION="us-east-1"
+# Configure Nexus registry
+export NEXUS_REGISTRY="nexus.your-domain.com:8082"
+export NEXUS_REPOSITORY="docker-hosted"
+export NEXUS_USERNAME="your-username"
+export NEXUS_PASSWORD="your-password"  # Or will be prompted
 
-# Build and push to ECR
+# Build and push to Nexus
 ./scripts/build-and-push.sh
 ```
 
 ### Step 4: Update Kubernetes Manifests
 
 ```bash
-# Get your ECR image URI
-IMAGE_URI="123456789012.dkr.ecr.us-east-1.amazonaws.com/abinitio-batch-service:latest"
+# Get your Nexus image URI
+IMAGE_URI="nexus.your-domain.com:8082/docker-hosted/abinitio-batch-service:latest"
 
-# Update job manifest
-sed -i '' "s|<YOUR_ECR_REGISTRY>/abinitio-batch-service:latest|${IMAGE_URI}|g" k8s/abinitio-batch-job.yaml
-sed -i '' "s|<YOUR_ECR_REGISTRY>/abinitio-batch-service:latest|${IMAGE_URI}|g" k8s/job-templates/*.yaml
+# Update job manifests
+sed -i '' "s|<NEXUS_REGISTRY>/<REPOSITORY>/abinitio-batch-service:latest|${IMAGE_URI}|g" k8s/abinitio-batch-job.yaml
+sed -i '' "s|<NEXUS_REGISTRY>/<REPOSITORY>/abinitio-batch-service:latest|${IMAGE_URI}|g" k8s/job-templates/*.yaml
 
-# Update IAM role ARN in rbac.yaml
-sed -i '' "s|ACCOUNT_ID|${AWS_ACCOUNT_ID}|g" k8s/rbac.yaml
+# Update IAM role ARN in rbac.yaml (get from IAC team)
+sed -i '' "s|ACCOUNT_ID|YOUR_AWS_ACCOUNT_ID|g" k8s/rbac.yaml
 ```
 
 ### Step 5: Deploy to EKS
@@ -317,7 +318,7 @@ kubectl logs -f job/abinitio-status-job -n bi-abi-apps-dev
 - ✅ Local development and testing scripts
 - ✅ Sample K8s manifests for reference
 
-**Deployment:** After building the Docker image and pushing to ECR, update the image tag in the IAC repo's `values-dev.yaml` file. ArgoCD will automatically sync and deploy.
+**Deployment:** After building the Docker image and pushing to Nexus, update the image tag in the IAC repo's `values-dev.yaml` file. ArgoCD will automatically sync and deploy.
 
 ## Monitoring and Troubleshooting
 
@@ -352,11 +353,14 @@ kubectl logs $POD_NAME -n bi-abi-apps-dev --follow
 
 **Issue: ImagePullBackOff**
 ```bash
-# Check image exists in ECR
-aws ecr describe-images --repository-name abinitio-batch-service --region us-east-1
+# Check image exists in Nexus
+curl -u username:password https://nexus.your-domain.com:8082/v2/docker-hosted/abinitio-batch-service/tags/list
 
 # Verify image URI in job manifest
 kubectl get job abinitio-submit-job -n bi-abi-apps-dev -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+# Check if Nexus credentials secret exists (if using imagePullSecrets)
+kubectl get secret nexus-docker-credentials -n bi-abi-apps-dev
 ```
 
 **Issue: API Health Check Fails**
@@ -404,7 +408,8 @@ python3 src/abinitio_batch_service.py
 # Build new image
 docker build -t abinitio-batch-service:$(git rev-parse --short HEAD) .
 
-# Push to ECR
+# Push to Nexus
+export IMAGE_TAG=$(git rev-parse --short HEAD)
 ./scripts/build-and-push.sh
 
 # Update infrastructure repo with new tag

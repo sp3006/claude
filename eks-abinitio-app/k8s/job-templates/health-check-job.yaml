@@ -16,7 +16,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: health-check
-        image: <YOUR_ECR_REGISTRY>/abinitio-batch-service:latest
+        image: <NEXUS_REGISTRY>/<REPOSITORY>/abinitio-batch-service:latest
         env:
         - name: OPERATION
           value: "health"
