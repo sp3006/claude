@@ -7,25 +7,29 @@ Production-ready batch service for submitting and managing Ab Initio jobs on EKS
 ### Repository Structure
 
 ```
-Application Repo (this repo)              Infrastructure Repo (separate)
+Application Repo (this repo)              IAC/Infrastructure Repo (separate)
 ├── src/                                  ├── k8s/abinitio-batch-service/
 │   ├── abinitio_api_client.py           │   ├── values-dev.yaml
-│   └── abinitio_batch_service.py        │   ├── deployment.yaml
-├── config/                               │   ├── configmap.yaml
-│   ├── job_spec.yaml (sample)           │   ├── secrets.yaml
-│   └── runtime.yaml (sample)            │   └── rbac.yaml
-├── k8s/                                  └── argocd/
-│   ├── abinitio-batch-job.yaml               └── abinitio-batch-service.yaml
-│   ├── configmap.yaml
-│   ├── rbac.yaml
-│   └── job-templates/
-├── infrastructure-templates/
-│   ├── values-dev.yaml
-│   ├── argocd-application.yaml
-│   └── README.md
+│   └── abinitio_batch_service.py        │   ├── configmap.yaml
+├── config/                               │   ├── secrets.yaml
+│   ├── job_spec.yaml (sample)           │   └── rbac.yaml
+│   └── runtime.yaml (sample)            ├── images/
+├── k8s/ (for local testing)             │   ├── abinitio-cooperating-system/
+│   ├── abinitio-batch-job.yaml          │   └── teradata-base/
+│   ├── configmap.yaml                   │       (deployed: docker-appimage-bi-snp-ss-prod-us-east-1:cmi_prem:202510061127)
+│   ├── rbac.yaml                        └── argocd/
+│   └── job-templates/                        └── abinitio-batch-service.yaml
+├── scripts/
+│   ├── setup-kubeconfig-okta.sh
+│   ├── test-local.sh
+│   ├── build-and-push.sh
+│   └── deploy-to-eks.sh
 ├── Dockerfile
-└── requirements.txt
+├── requirements.txt
+└── README.md
 ```
+
+**Note:** Base images (Ab Initio Co-Operating System, Teradata) are already deployed via IAC repo using ArgoCD.
 
 ### Component Flow
 
@@ -294,64 +298,26 @@ kubectl logs -f job/abinitio-status-job -n bi-abi-apps-dev
 # Waiting 10s before next check...
 ```
 
-## Integration with Infrastructure Repository
+## IAC Repository Integration
 
-This application repo contains only application code. Configuration is managed separately in the Infrastructure repository.
+**This application repo contains only application code.** All infrastructure configuration is managed in the separate IAC repository:
 
-### Copy Templates to Infrastructure Repo
+### IAC Repo Manages:
+- ✅ Ab Initio Co-Operating System images (deployed via ArgoCD)
+- ✅ Teradata base images: `docker-appimage-bi-snp-ss-prod-us-east-1:cmi_prem:202510061127`
+- ✅ Database configurations (host, port, credentials)
+- ✅ S3 bucket names and IAM roles
+- ✅ Private project paths and directories
+- ✅ Secrets (DB passwords, API keys)
+- ✅ ArgoCD deployment configurations (`values-dev.yaml`)
 
-```bash
-# In infrastructure repository
-cd <infrastructure-repo>
+### Application Repo (this repo) Provides:
+- ✅ Python application code for API operations
+- ✅ Docker image with batch service
+- ✅ Local development and testing scripts
+- ✅ Sample K8s manifests for reference
 
-# Create directory structure
-mkdir -p k8s/abinitio-batch-service argocd
-
-# Copy templates from application repo
-cp <app-repo>/infrastructure-templates/values-dev.yaml k8s/abinitio-batch-service/
-cp <app-repo>/infrastructure-templates/argocd-application.yaml argocd/abinitio-batch-service.yaml
-```
-
-### Update values-dev.yaml
-
-Edit the following in `values-dev.yaml`:
-
-```yaml
-image:
-  repository: docker-appimage-bi-snp-ss-prod-us-east-1
-  tag: cmi_prem:202510061127  # Your deployed image tag
-
-database:
-  host: "teradata-db.cluster.local"
-  name: "abinitio_dev_db"
-  secrets:
-    passwordSecretName: "db-credentials"
-
-s3:
-  bucket: "abinitio-dev-bucket"
-
-iam:
-  serviceAccount:
-    annotations:
-      eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/abinitio-batch-service-role"
-
-paths:
-  projectRoot: "/opt/abinitio/projects"
-  graphsDir: "/opt/abinitio/projects/graphs"
-```
-
-### Deploy with ArgoCD
-
-```bash
-# Apply ArgoCD application
-kubectl apply -f argocd/abinitio-batch-service.yaml
-
-# Sync application
-argocd app sync abinitio-batch-service
-
-# Watch deployment
-argocd app get abinitio-batch-service --refresh
-```
+**Deployment:** After building the Docker image and pushing to ECR, update the image tag in the IAC repo's `values-dev.yaml` file. ArgoCD will automatically sync and deploy.
 
 ## Monitoring and Troubleshooting
 
@@ -483,6 +449,7 @@ argocd app delete abinitio-batch-service
 ## Support
 
 For issues or questions:
-- Check the [infrastructure-templates/README.md](infrastructure-templates/README.md) for integration details
-- Review logs: `kubectl logs -f -l app=abinitio-batch-service -n bi-abi-apps-dev`
-- Contact: DevOps team or Ab Initio administrators
+- **Configuration/Infrastructure**: Contact the IAC team managing the Infrastructure repository
+- **Application Issues**: Review logs: `kubectl logs -f -l app=abinitio-batch-service -n bi-abi-apps-dev`
+- **API Issues**: Check Ab Initio API documentation or contact Ab Initio administrators
+- **EKS/OIDC Issues**: Contact DevOps team
