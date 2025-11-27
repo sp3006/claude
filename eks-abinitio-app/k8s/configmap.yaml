@@ -1,37 +1,62 @@
+---
+# Application Configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: abinitio-runtime-config
+  name: abinitio-app-config
   namespace: bi-abi-apps-dev
   labels:
     app: abinitio-batch-service
 data:
-  runtime.yaml: |
-    apiVersion: abinitio.io/v1
-    kind: CooperatingSystem
-    metadata:
-      name: sample-cooperating-system
-      namespace: abinitio-operator
-      labels:
-        app: abinitio-runtime
-        environment: dev
-    spec:
-      version: "4.0"
-      resources:
-        requests:
-          cpu: "500m"
-          memory: "1Gi"
-        limits:
-          cpu: "2000m"
-          memory: "4Gi"
-      environment:
-        - name: AB_HOME
-          value: "/opt/abinitio"
-        - name: AB_AIR_ROOT
-          value: "/opt/abinitio/air"
-      storage:
-        dataDir: "/data"
-        configDir: "/config"
-      networking:
-        serviceType: ClusterIP
-        port: 8080
+  # Ab Initio API Configuration
+  ABINITIO_API_BASE: "https://abinitio-api-bi-abi-apps-dev.cluster"
+
+  # Polling configuration
+  POLL_INTERVAL: "10"
+  MAX_POLL_ATTEMPTS: "60"
+
+  # Database configuration (values from infrastructure repo)
+  DB_HOST: "teradata-db.cluster.local"
+  DB_PORT: "1025"
+  DB_NAME: "abinitio_dev_db"
+  DB_USER: "abinitio_svc_user"
+
+  # S3 configuration
+  S3_BUCKET: "abinitio-dev-bucket"
+  S3_PREFIX: "batch-jobs/"
+  S3_REGION: "us-east-1"
+
+  # IAM role (injected via service account annotation)
+  IAM_ROLE_ARN: "arn:aws:iam::ACCOUNT_ID:role/abinitio-batch-service-role"
+
+---
+# Job Specification ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: abinitio-job-spec
+  namespace: bi-abi-apps-dev
+  labels:
+    app: abinitio-batch-service
+data:
+  job_spec.yaml: |
+    name: "sample-abinitio-job"
+    graph: "/ab-initio/graphs/sample_graph.mp"
+    parameters:
+      input_file: "s3://abinitio-dev-bucket/input/data.csv"
+      output_file: "s3://abinitio-dev-bucket/output/result.csv"
+      processing_date: "2025-01-01"
+    database:
+      host: "teradata-db.cluster.local"
+      port: 1025
+      name: "abinitio_dev_db"
+      user: "abinitio_svc_user"
+    s3:
+      bucket: "abinitio-dev-bucket"
+      prefix: "batch-jobs/"
+    iam_role: "arn:aws:iam::ACCOUNT_ID:role/abinitio-batch-service-role"
+    resources:
+      cpu: "2000m"
+      memory: "4Gi"
+    timeout: 3600
+    debug: false

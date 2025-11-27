@@ -1,0 +1,34 @@
+# Health Check Job - Tests Ab Initio API health
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: abinitio-health-check
+  namespace: bi-abi-apps-dev
+  labels:
+    app: abinitio-batch-service
+    operation: health
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: abinitio-batch-sa
+      restartPolicy: Never
+      containers:
+      - name: health-check
+        image: <YOUR_ECR_REGISTRY>/abinitio-batch-service:latest
+        env:
+        - name: OPERATION
+          value: "health"
+        - name: ABINITIO_API_BASE
+          valueFrom:
+            configMapKeyRef:
+              name: abinitio-app-config
+              key: ABINITIO_API_BASE
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

@@ -1,0 +1,41 @@
+# Status Job - Gets status of an Ab Initio job with optional polling
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: abinitio-status-job
+  namespace: bi-abi-apps-dev
+  labels:
+    app: abinitio-batch-service
+    operation: status
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 1800
+  activeDeadlineSeconds: 3600  # 1 hour max for polling
+  template:
+    spec:
+      serviceAccountName: abinitio-batch-sa
+      restartPolicy: OnFailure
+      containers:
+      - name: status-check
+        image: <YOUR_ECR_REGISTRY>/abinitio-batch-service:latest
+        envFrom:
+        - configMapRef:
+            name: abinitio-app-config
+        env:
+        - name: OPERATION
+          value: "status"
+        - name: JOB_NAME
+          value: "<JOB_NAME_TO_CHECK>"  # Replace with actual job name
+        - name: POLL
+          value: "true"  # Set to "true" to enable polling
+        - name: POLL_INTERVAL
+          value: "10"  # Seconds between checks
+        - name: MAX_POLL_ATTEMPTS
+          value: "60"  # Max number of polling attempts
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

@@ -1,156 +1,219 @@
 #!/usr/bin/env python3
 """
-Ab Initio Batch Service - Submit CooperatingSystem Runtime YAML to K8s API
+Ab Initio Batch Service - Main orchestrator for Ab Initio operations
+Supports: Health Check, Submit Job, Cancel Job, Get Job Status
 """
 
 import os
 import sys
-import requests
 import yaml
-from kubernetes import client, config
-from kubernetes.client.rest import ApiException
+import json
+import time
+from typing import Dict, Any
+from abinitio_api_client import AbInitioAPIClient
+
 
 # Configuration from environment variables
-ABINITIO_API_BASE = os.getenv('ABINITIO_API_BASE', 'https://abinitio-api-bi-dev')
-ABINITIO_OPERATOR_NAMESPACE = os.getenv('ABINITIO_OPERATOR_NAMESPACE', 'abinitio-operator')
-RUNTIME_YAML_PATH = os.getenv('RUNTIME_YAML_PATH', '/app/config/runtime.yaml')
+ABINITIO_API_BASE = os.getenv('ABINITIO_API_BASE', 'https://abinitio-api-bi-abi-apps-dev.cluster')
+JOB_SPEC_PATH = os.getenv('JOB_SPEC_PATH', '/app/config/job_spec.yaml')
+OPERATION = os.getenv('OPERATION', 'submit')  # submit, cancel, status, health
+JOB_NAME = os.getenv('JOB_NAME', '')  # Required for cancel and status operations
+POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '10'))  # Seconds between status checks
+MAX_POLL_ATTEMPTS = int(os.getenv('MAX_POLL_ATTEMPTS', '60'))  # Max polling attempts
 
 
-def check_health():
-    """Check Ab Initio API health endpoint"""
+def load_job_spec(yaml_path: str) -> Dict[str, Any]:
+    """Load job specification from YAML file"""
     try:
-        print(f"Checking health endpoint: {ABINITIO_API_BASE}/health")
-        response = requests.get(
-            f"{ABINITIO_API_BASE}/health",
-            timeout=10,
-            verify=True
-        )
-        response.raise_for_status()
-        print(f"✓ Health check passed: Status {response.status_code}")
-        print(f"  Response: {response.text[:200]}")
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"✗ Health check failed: {e}")
-        return False
-
-
-def load_runtime_yaml(yaml_path):
-    """Load cooperating system runtime YAML file"""
-    try:
-        print(f"Loading runtime YAML from: {yaml_path}")
+        print(f"Loading job specification from: {yaml_path}")
         with open(yaml_path, 'r') as f:
-            runtime_spec = yaml.safe_load(f)
-        print(f"✓ Successfully loaded YAML")
-        print(f"  Kind: {runtime_spec.get('kind')}")
-        print(f"  Name: {runtime_spec.get('metadata', {}).get('name')}")
-        return runtime_spec
+            job_spec = yaml.safe_load(f)
+        print(f"✓ Successfully loaded job spec")
+        print(f"  Job Name: {job_spec.get('name', 'N/A')}")
+        print(f"  Graph: {job_spec.get('graph', 'N/A')}")
+        return job_spec
     except FileNotFoundError:
-        print(f"✗ YAML file not found: {yaml_path}")
+        print(f"✗ Job spec file not found: {yaml_path}")
         sys.exit(1)
     except yaml.YAMLError as e:
         print(f"✗ Invalid YAML format: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"✗ Failed to load YAML: {e}")
+        print(f"✗ Failed to load job spec: {e}")
         sys.exit(1)
 
 
-def submit_to_k8s(runtime_spec, namespace):
-    """Submit runtime YAML to K8s API via abinitio operator namespace"""
-    try:
-        # Load kubernetes config
-        try:
-            config.load_incluster_config()
-            print("✓ Using in-cluster Kubernetes config")
-        except config.ConfigException:
-            config.load_kube_config()
-            print("✓ Using local kubeconfig file")
+def operation_health_check(client: AbInitioAPIClient) -> bool:
+    """Execute health check operation"""
+    print("\n" + "=" * 70)
+    print("OPERATION: Health Check")
+    print("=" * 70)
 
-        # Create API client
-        api = client.CustomObjectsApi()
+    result = client.health_check()
 
-        # Extract resource details from runtime spec
-        api_version = runtime_spec.get('apiVersion', '')
-        if '/' in api_version:
-            group, version = api_version.split('/', 1)
-        else:
-            group = ''
-            version = api_version
+    if result.get('status') == 'healthy':
+        print("\n✓ Health check passed")
+        return True
+    else:
+        print(f"\n✗ Health check failed: {result.get('error', 'Unknown error')}")
+        return False
 
-        kind = runtime_spec.get('kind', '')
-        plural = kind.lower() + 's'
-        name = runtime_spec.get('metadata', {}).get('name', 'unknown')
 
-        print(f"\nSubmitting to Kubernetes API:")
-        print(f"  API Version: {api_version}")
-        print(f"  Kind: {kind}")
-        print(f"  Name: {name}")
-        print(f"  Namespace: {namespace}")
+def operation_submit_job(client: AbInitioAPIClient, job_spec: Dict[str, Any]) -> bool:
+    """Execute job submission operation"""
+    print("\n" + "=" * 70)
+    print("OPERATION: Submit Job")
+    print("=" * 70)
 
-        # Create or update the custom resource
-        try:
-            response = api.create_namespaced_custom_object(
-                group=group,
-                version=version,
-                namespace=namespace,
-                plural=plural,
-                body=runtime_spec
-            )
-            print(f"✓ Successfully created resource in K8s")
-        except ApiException as e:
-            if e.status == 409:
-                print(f"Resource already exists, updating...")
-                response = api.patch_namespaced_custom_object(
-                    group=group,
-                    version=version,
-                    namespace=namespace,
-                    plural=plural,
-                    name=name,
-                    body=runtime_spec
-                )
-                print(f"✓ Successfully updated resource in K8s")
-            else:
-                raise
+    # First, health check
+    print("\n[1/2] Performing health check...")
+    health = client.health_check()
+    if health.get('status') != 'healthy':
+        print("✗ Health check failed. Aborting job submission.")
+        return False
 
-        return response
+    # Submit the job
+    print("\n[2/2] Submitting job...")
+    result = client.submit_job(job_spec)
 
-    except ApiException as e:
-        print(f"✗ Kubernetes API error: {e.status} - {e.reason}")
-        print(f"  Details: {e.body}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"✗ Unexpected error: {type(e).__name__}: {e}")
-        sys.exit(1)
+    if result.get('success'):
+        print("\n✓ Job submitted successfully")
+        job_data = result.get('data', {})
+        print(f"  Job ID: {job_data.get('job_id', 'N/A')}")
+        print(f"  Status: {job_data.get('status', 'N/A')}")
+        return True
+    else:
+        print(f"\n✗ Job submission failed: {result.get('error', 'Unknown error')}")
+        return False
+
+
+def operation_cancel_job(client: AbInitioAPIClient, job_name: str) -> bool:
+    """Execute job cancellation operation"""
+    print("\n" + "=" * 70)
+    print("OPERATION: Cancel Job")
+    print("=" * 70)
+
+    if not job_name:
+        print("✗ Job name is required for cancel operation")
+        print("  Set JOB_NAME environment variable")
+        return False
+
+    result = client.cancel_job(job_name)
+
+    if result.get('success'):
+        print(f"\n✓ Job '{job_name}' cancelled successfully")
+        return True
+    else:
+        print(f"\n✗ Failed to cancel job '{job_name}': {result.get('error', 'Unknown error')}")
+        return False
+
+
+def operation_get_status(client: AbInitioAPIClient, job_name: str, poll: bool = False) -> bool:
+    """Execute get job status operation"""
+    print("\n" + "=" * 70)
+    print("OPERATION: Get Job Status")
+    print("=" * 70)
+
+    if not job_name:
+        print("✗ Job name is required for status operation")
+        print("  Set JOB_NAME environment variable")
+        return False
+
+    if poll:
+        print(f"Polling enabled: Will check status every {POLL_INTERVAL}s (max {MAX_POLL_ATTEMPTS} attempts)")
+
+    attempt = 0
+    while True:
+        attempt += 1
+        print(f"\n[Attempt {attempt}/{MAX_POLL_ATTEMPTS if poll else 1}]")
+
+        result = client.get_job_status(job_name)
+
+        if not result.get('success'):
+            print(f"\n✗ Failed to get job status: {result.get('error', 'Unknown error')}")
+            return False
+
+        job_data = result.get('data', {})
+        status = job_data.get('status', 'UNKNOWN')
+        progress = job_data.get('progress', 'N/A')
+
+        print(f"\nJob Status:")
+        print(f"  Name: {job_name}")
+        print(f"  Status: {status}")
+        print(f"  Progress: {progress}")
+
+        # Check if job is in terminal state
+        if status in ['COMPLETED', 'FAILED', 'CANCELLED']:
+            print(f"\n✓ Job reached terminal state: {status}")
+            return status == 'COMPLETED'
+
+        # If not polling or max attempts reached, exit
+        if not poll or attempt >= MAX_POLL_ATTEMPTS:
+            break
+
+        # Wait before next poll
+        print(f"\nWaiting {POLL_INTERVAL}s before next check...")
+        time.sleep(POLL_INTERVAL)
+
+    if poll and attempt >= MAX_POLL_ATTEMPTS:
+        print(f"\n⚠ Max polling attempts reached. Job is still in '{status}' state.")
+
+    return True
 
 
 def main():
     """Main execution flow"""
     print("=" * 70)
-    print("Ab Initio Batch Service - CooperatingSystem Runtime Submission")
+    print("Ab Initio Batch Service")
     print("=" * 70)
     print(f"Configuration:")
     print(f"  API Base: {ABINITIO_API_BASE}")
-    print(f"  Operator Namespace: {ABINITIO_OPERATOR_NAMESPACE}")
-    print(f"  Runtime YAML: {RUNTIME_YAML_PATH}")
+    print(f"  Operation: {OPERATION}")
+    print(f"  Job Name: {JOB_NAME or 'N/A'}")
     print("=" * 70)
 
-    # Step 1: Health check
-    print("\n[STEP 1/3] Checking Ab Initio API health...")
-    if not check_health():
-        print("\n✗ Health check failed. Aborting.")
-        sys.exit(1)
+    # Initialize API client
+    client = AbInitioAPIClient(
+        base_url=ABINITIO_API_BASE,
+        timeout=30,
+        verify_ssl=True
+    )
 
-    # Step 2: Load runtime YAML
-    print(f"\n[STEP 2/3] Loading CooperatingSystem runtime YAML...")
-    runtime_spec = load_runtime_yaml(RUNTIME_YAML_PATH)
+    success = False
 
-    # Step 3: Submit to K8s API
-    print(f"\n[STEP 3/3] Submitting to Kubernetes API...")
-    result = submit_to_k8s(runtime_spec, ABINITIO_OPERATOR_NAMESPACE)
+    try:
+        # Execute operation based on OPERATION env var
+        if OPERATION == 'health':
+            success = operation_health_check(client)
 
+        elif OPERATION == 'submit':
+            job_spec = load_job_spec(JOB_SPEC_PATH)
+            success = operation_submit_job(client, job_spec)
+
+        elif OPERATION == 'cancel':
+            success = operation_cancel_job(client, JOB_NAME)
+
+        elif OPERATION == 'status':
+            poll = os.getenv('POLL', 'false').lower() == 'true'
+            success = operation_get_status(client, JOB_NAME, poll=poll)
+
+        else:
+            print(f"\n✗ Unknown operation: {OPERATION}")
+            print(f"  Supported operations: health, submit, cancel, status")
+            sys.exit(1)
+
+    finally:
+        client.close()
+
+    # Final status
     print("\n" + "=" * 70)
-    print("✓ BATCH SERVICE COMPLETED SUCCESSFULLY")
+    if success:
+        print("✓ OPERATION COMPLETED SUCCESSFULLY")
+    else:
+        print("✗ OPERATION FAILED")
     print("=" * 70)
+
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

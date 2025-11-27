@@ -1,10 +1,11 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: abinitio-batch-job
+  name: abinitio-submit-job
   namespace: bi-abi-apps-dev
   labels:
     app: abinitio-batch-service
+    operation: submit
     environment: dev
 spec:
   # Job will retry up to 3 times on failure
@@ -13,31 +14,46 @@ spec:
   # Remove completed jobs after 1 hour
   ttlSecondsAfterFinished: 3600
 
+  # Max execution time: 2 hours
+  activeDeadlineSeconds: 7200
+
   template:
     metadata:
       labels:
         app: abinitio-batch-service
-        job: abinitio-batch-job
+        operation: submit
     spec:
-      # Service account with permissions to access K8s API and abinitio-operator namespace
+      # Service account with IAM role for AWS access
       serviceAccountName: abinitio-batch-sa
 
       restartPolicy: OnFailure
 
       containers:
       - name: batch-service
-        # Replace with your actual image repository and tag
+        # Replace with your actual ECR image
+        # Example: 123456789012.dkr.ecr.us-east-1.amazonaws.com/abinitio-batch-service:latest
         image: <YOUR_ECR_REGISTRY>/abinitio-batch-service:latest
         imagePullPolicy: Always
 
-        # Environment variables
+        # Load environment from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: abinitio-app-config
+
+        # Specific environment variables for this job
         env:
-        - name: ABINITIO_API_BASE
-          value: "https://abinitio-api-bi-dev"
-        - name: ABINITIO_OPERATOR_NAMESPACE
-          value: "abinitio-operator"
-        - name: RUNTIME_YAML_PATH
-          value: "/app/config/runtime.yaml"
+        - name: OPERATION
+          value: "submit"
+        - name: JOB_SPEC_PATH
+          value: "/app/config/job_spec.yaml"
+
+        # Database password from secret
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+              optional: false
 
         # Resource limits
         resources:
@@ -45,17 +61,17 @@ spec:
             cpu: "250m"
             memory: "512Mi"
           limits:
-            cpu: "1000m"
-            memory: "2Gi"
+            cpu: "2000m"
+            memory: "4Gi"
 
-        # Mount the runtime YAML as ConfigMap
+        # Mount job specification from ConfigMap
         volumeMounts:
-        - name: runtime-config
+        - name: job-spec
           mountPath: /app/config
           readOnly: true
 
-      # Volume definition
+      # Volume definitions
       volumes:
-      - name: runtime-config
+      - name: job-spec
         configMap:
-          name: abinitio-runtime-config
+          name: abinitio-job-spec

@@ -1,0 +1,40 @@
+# Ab Initio Job Specification
+# This file defines the job to be submitted to the Ab Initio API
+
+name: "sample-abinitio-job"
+
+# Graph path - path to the Ab Initio graph/mp file
+graph: "/ab-initio/graphs/sample_graph.mp"
+
+# Job parameters
+parameters:
+  input_file: "s3://bucket-name/input/data.csv"
+  output_file: "s3://bucket-name/output/result.csv"
+  processing_date: "2025-01-01"
+
+# Database configuration (will be injected from infrastructure config)
+database:
+  host: "${DB_HOST}"
+  port: "${DB_PORT}"
+  name: "${DB_NAME}"
+  user: "${DB_USER}"
+  # Password comes from secrets
+
+# S3 configuration
+s3:
+  bucket: "${S3_BUCKET}"
+  prefix: "${S3_PREFIX}"
+
+# IAM role for job execution
+iam_role: "${IAM_ROLE_ARN}"
+
+# Resource requirements
+resources:
+  cpu: "2000m"
+  memory: "4Gi"
+
+# Timeout in seconds
+timeout: 3600
+
+# Enable debug mode
+debug: false

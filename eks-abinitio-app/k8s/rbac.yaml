@@ -1,5 +1,5 @@
 ---
-# ServiceAccount for the batch job
+# ServiceAccount for the batch job with IAM role annotation for IRSA
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -7,21 +7,55 @@ metadata:
   namespace: bi-abi-apps-dev
   labels:
     app: abinitio-batch-service
+  annotations:
+    # IAM Role for Service Account (IRSA) - UPDATE WITH YOUR IAM ROLE ARN
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/abinitio-batch-service-role"
 
 ---
-# Role with permissions to create/update resources in abinitio-operator namespace
+# Role with permissions in bi-abi-apps-dev namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: abinitio-operator-writer
+  name: abinitio-batch-role
+  namespace: bi-abi-apps-dev
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+
+---
+# RoleBinding for bi-abi-apps-dev namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: abinitio-batch-binding
+  namespace: bi-abi-apps-dev
+subjects:
+- kind: ServiceAccount
+  name: abinitio-batch-sa
+  namespace: bi-abi-apps-dev
+roleRef:
+  kind: Role
+  name: abinitio-batch-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Role with permissions to access abinitio-operator namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: abinitio-operator-reader
   namespace: abinitio-operator
 rules:
 - apiGroups: ["abinitio.io"]
-  resources: ["cooperatingsystems"]
-  verbs: ["get", "list", "create", "update", "patch"]
+  resources: ["cooperatingsystems", "graphs", "jobs"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["pods", "pods/log"]
-  verbs: ["get", "list"]
+  verbs: ["get", "list", "watch"]
 
 ---
 # RoleBinding to grant the ServiceAccount access to abinitio-operator namespace
@@ -36,5 +70,5 @@ subjects:
   namespace: bi-abi-apps-dev
 roleRef:
   kind: Role
-  name: abinitio-operator-writer
+  name: abinitio-operator-reader
   apiGroup: rbac.authorization.k8s.io

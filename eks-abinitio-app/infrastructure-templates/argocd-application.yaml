@@ -1,0 +1,69 @@
+# ArgoCD Application definition
+# This file should be placed in your Infrastructure repository
+# ArgoCD will use this to deploy the Ab Initio batch service
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: abinitio-batch-service
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # Project where this application belongs
+  project: abinitio-dev
+
+  # Source repository (Infrastructure/Config repo)
+  source:
+    # Update with your infrastructure repository URL
+    repoURL: https://github.com/your-org/infrastructure-config.git
+    targetRevision: main
+    path: k8s/abinitio-batch-service
+
+    # Helm values (if using Helm) or Kustomize
+    helm:
+      valueFiles:
+        - values-dev.yaml
+
+      # Override specific values
+      values: |
+        app:
+          namespace: bi-abi-apps-dev
+
+        image:
+          repository: docker-appimage-bi-snp-ss-prod-us-east-1
+          tag: cmi_prem:202510061127
+
+  # Destination cluster and namespace
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bi-abi-apps-dev
+
+  # Sync policy
+  syncPolicy:
+    automated:
+      prune: true        # Auto-delete resources removed from git
+      selfHeal: true     # Auto-sync when cluster state differs from git
+      allowEmpty: false
+
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # Ignore differences in certain fields
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+
+  # Health assessment
+  revisionHistoryLimit: 10

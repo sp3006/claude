@@ -1,0 +1,160 @@
+# values-dev.yaml - Configuration for Infrastructure Repo
+# This file should be placed in your Infrastructure/Config repository
+# and deployed via ArgoCD
+
+# Application metadata
+app:
+  name: abinitio-batch-service
+  namespace: bi-abi-apps-dev
+  environment: dev
+
+# Image configuration - References existing deployed images
+image:
+  # Example: docker-appimage-bi-snp-ss-prod-us-east-1
+  repository: docker-appimage-bi-snp-ss-prod-us-east-1
+  tag: cmi_prem:202510061127  # Update with your image tag
+  pullPolicy: Always
+
+# Ab Initio Co-Operating System configuration
+cooperatingSystem:
+  enabled: true
+  # Reference to existing Co-Operating System image deployed via ArgoCD
+  image:
+    repository: abinitio-cooperating-system
+    tag: "4.0"
+
+# Teradata base image configuration
+teradata:
+  enabled: true
+  image:
+    repository: teradata-base-image
+    tag: "latest"
+
+# Database configuration
+database:
+  # Database names
+  host: "teradata-db.cluster.local"
+  port: 1025
+  name: "abinitio_dev_db"
+  user: "abinitio_svc_user"
+
+  # Database secrets - stored in Kubernetes Secrets
+  secrets:
+    passwordSecretName: "db-credentials"
+    passwordSecretKey: "password"
+
+# S3 bucket configuration
+s3:
+  bucket: "abinitio-dev-bucket"
+  prefix: "batch-jobs/"
+  region: "us-east-1"
+
+# IAM roles
+iam:
+  # Service account annotations for IRSA (IAM Roles for Service Accounts)
+  serviceAccount:
+    name: abinitio-batch-sa
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/abinitio-batch-service-role"
+
+# Private project paths and directories
+paths:
+  # Ab Initio project paths
+  projectRoot: "/opt/abinitio/projects"
+  graphsDir: "/opt/abinitio/projects/graphs"
+  dataDir: "/data/abinitio"
+  logsDir: "/logs/abinitio"
+  tmpDir: "/tmp/abinitio"
+
+# Ab Initio API configuration
+api:
+  baseUrl: "https://abinitio-api-bi-abi-apps-dev.cluster"
+  timeout: 30
+  verifySsl: true
+
+# Job configuration
+job:
+  # Job defaults
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+# Secrets configuration
+secrets:
+  # List of secrets to be created/referenced
+  - name: db-credentials
+    type: Opaque
+    data:
+      password: "${DB_PASSWORD}"  # Injected from external secret manager
+
+  - name: api-credentials
+    type: Opaque
+    data:
+      api-key: "${API_KEY}"
+
+# ConfigMaps
+configMaps:
+  # Application configuration
+  - name: abinitio-app-config
+    data:
+      ABINITIO_API_BASE: "https://abinitio-api-bi-abi-apps-dev.cluster"
+      OPERATION: "submit"
+      POLL_INTERVAL: "10"
+      MAX_POLL_ATTEMPTS: "60"
+      DB_HOST: "teradata-db.cluster.local"
+      DB_PORT: "1025"
+      DB_NAME: "abinitio_dev_db"
+      S3_BUCKET: "abinitio-dev-bucket"
+      S3_PREFIX: "batch-jobs/"
+
+# ArgoCD configuration
+argocd:
+  enabled: true
+  project: abinitio-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+# Monitoring and logging
+monitoring:
+  enabled: true
+  prometheus:
+    scrape: true
+    port: 8080
+    path: /metrics
+
+logging:
+  level: INFO
+  format: json
+  outputs:
+    - stdout
+    - cloudwatch
+
+# Network policies
+networkPolicy:
+  enabled: true
+  allowedNamespaces:
+    - abinitio-operator
+    - monitoring
+  egressRules:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: abinitio-operator
+    - ports:
+        - protocol: TCP
+          port: 443  # For S3/AWS API
+        - protocol: TCP
+          port: 1025  # For Teradata

@@ -1,524 +1,488 @@
 # Ab Initio EKS Batch Service with Okta OIDC
 
-This application submits CooperatingSystem runtime YAML to Kubernetes API via the Ab Initio operator, running as a batch job on EKS with Okta OIDC authentication.
+Production-ready batch service for submitting and managing Ab Initio jobs on EKS with Okta OIDC authentication.
 
 ## Architecture
 
+### Repository Structure
+
 ```
-Local Laptop → Okta OIDC Auth → EKS Cluster → Namespace: bi-abi-apps-dev
+Application Repo (this repo)              Infrastructure Repo (separate)
+├── src/                                  ├── k8s/abinitio-batch-service/
+│   ├── abinitio_api_client.py           │   ├── values-dev.yaml
+│   └── abinitio_batch_service.py        │   ├── deployment.yaml
+├── config/                               │   ├── configmap.yaml
+│   ├── job_spec.yaml (sample)           │   ├── secrets.yaml
+│   └── runtime.yaml (sample)            │   └── rbac.yaml
+├── k8s/                                  └── argocd/
+│   ├── abinitio-batch-job.yaml               └── abinitio-batch-service.yaml
+│   ├── configmap.yaml
+│   ├── rbac.yaml
+│   └── job-templates/
+├── infrastructure-templates/
+│   ├── values-dev.yaml
+│   ├── argocd-application.yaml
+│   └── README.md
+├── Dockerfile
+└── requirements.txt
+```
+
+### Component Flow
+
+```
+Local Laptop → Okta OIDC Auth → EKS Cluster
+                                    ↓
+                            Namespace: bi-abi-apps-dev
                                     ↓
                             Kubernetes Job (Python Batch Service)
                                     ↓
-                            1. Check Health: GET https://abinitio-api-bi-dev/health
-                            2. Submit CooperatingSystem YAML → abinitio-operator namespace
+┌──────────────────────────────────────────────────────────────┐
+│  API Operations:                                             │
+│  1. Health Check:  GET    /health                           │
+│  2. Submit Job:    POST   /abinitio/jobs                    │
+│  3. Cancel Job:    DELETE /abinitio/jobs/{name}             │
+│  4. Job Status:    GET    /abinitio/jobs/{name}             │
+└──────────────────────────────────────────────────────────────┘
                                     ↓
-                            Ab Initio Operator → Kubernetes API
+                        Ab Initio API: abinitio-api-bi-abi-apps-dev.cluster
+                                    ↓
+                            abinitio-operator namespace
+                                    ↓
+                        Ab Initio Co-Operating System + Teradata
+```
+
+### Technology Stack
+
+- **Python 3.11** - Application runtime
+- **Docker** - Containerization
+- **Amazon EKS** - Kubernetes orchestration
+- **ArgoCD** - GitOps deployment
+- **Okta OIDC** - Authentication
+- **AWS IRSA** - IAM Roles for Service Accounts
+- **Teradata** - Database backend
+- **S3** - Data storage
+
+## Supported Operations
+
+### 1. Health Check
+Check if Ab Initio API is healthy and accessible.
+
+**API Endpoint:** `GET https://abinitio-api-bi-abi-apps-dev.cluster/health`
+
+**Usage:**
+```bash
+kubectl apply -f k8s/job-templates/health-check-job.yaml
+kubectl logs -f job/abinitio-health-check -n bi-abi-apps-dev
+```
+
+### 2. Submit Job
+Submit a new Ab Initio job for processing.
+
+**API Endpoint:** `POST https://abinitio-api-bi-abi-apps-dev.cluster/abinitio/jobs`
+
+**Usage:**
+```bash
+# Update job_spec.yaml with your job details
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/abinitio-batch-job.yaml
+kubectl logs -f -l operation=submit -n bi-abi-apps-dev
+```
+
+### 3. Cancel Job
+Cancel a running Ab Initio job.
+
+**API Endpoint:** `DELETE https://abinitio-api-bi-abi-apps-dev.cluster/abinitio/jobs/{name}`
+
+**Usage:**
+```bash
+# Edit cancel-job.yaml and set JOB_NAME
+kubectl apply -f k8s/job-templates/cancel-job.yaml
+kubectl logs -f job/abinitio-cancel-job -n bi-abi-apps-dev
+```
+
+### 4. Get Job Status
+Get the status of a running or completed job, with optional polling.
+
+**API Endpoint:** `GET https://abinitio-api-bi-abi-apps-dev.cluster/abinitio/jobs/{name}`
+
+**Usage:**
+```bash
+# Edit status-job.yaml and set JOB_NAME, POLL=true for continuous monitoring
+kubectl apply -f k8s/job-templates/status-job.yaml
+kubectl logs -f job/abinitio-status-job -n bi-abi-apps-dev
 ```
 
 ## Prerequisites
 
-- Python 3.11+
-- Docker
-- AWS CLI configured
-- kubectl installed
-- Access to EKS cluster with Okta OIDC
-- Permissions to bi-abi-apps-dev and abinitio-operator namespaces
+- **Python 3.11+**
+- **Docker**
+- **AWS CLI** configured with appropriate credentials
+- **kubectl** installed and configured
+- **Access to EKS cluster** with Okta OIDC
+- **Permissions** to `bi-abi-apps-dev` and `abinitio-operator` namespaces
+- **ECR repository** for storing Docker images
 
-## Project Structure
+## Quick Start
 
-```
-eks-abinitio-app/
-├── src/
-│   └── abinitio_batch_service.py   # Main Python batch service
-├── k8s/
-│   ├── abinitio-batch-job.yaml     # Kubernetes Job manifest
-│   ├── rbac.yaml                    # ServiceAccount, Role, RoleBinding
-│   └── configmap.yaml               # Runtime YAML ConfigMap
-├── config/
-│   └── runtime.yaml                 # Sample CooperatingSystem runtime YAML
-├── scripts/
-│   ├── setup-kubeconfig-okta.sh    # Setup kubectl with Okta OIDC
-│   ├── test-local.sh                # Test locally before deploying
-│   ├── build-and-push.sh            # Build and push Docker image to ECR
-│   └── deploy-to-eks.sh             # Deploy Job to EKS
-├── requirements.txt                 # Python dependencies
-├── Dockerfile                       # Container image definition
-└── README.md                        # This file
-```
-
-## Step-by-Step Execution Guide
-
-### STEP 1: Configure Environment Variables
-
-Edit the scripts and update these values:
-
-```bash
-# In scripts/setup-kubeconfig-okta.sh
-export EKS_CLUSTER_NAME="your-eks-cluster-name"
-export AWS_REGION="us-east-1"
-export OKTA_IDP_ARN="arn:aws:iam::ACCOUNT_ID:oidc-provider/YOUR_OKTA_ISSUER"
-export OKTA_CLIENT_ID="your-okta-client-id"
-export OKTA_ISSUER_URL="https://your-domain.okta.com"
-
-# In scripts/build-and-push.sh
-export AWS_ACCOUNT_ID="123456789012"
-export AWS_REGION="us-east-1"
-export ECR_REPOSITORY="abinitio-batch-service"
-```
-
-**Test Command:**
-```bash
-# Verify AWS credentials
-aws sts get-caller-identity
-
-# Expected output: Your AWS account details
-```
-
-### STEP 2: Setup Kubectl with Okta OIDC Authentication
-
-Run the setup script to configure kubectl to authenticate to EKS using Okta OIDC:
+### Step 1: Setup kubectl with Okta OIDC
 
 ```bash
 cd eks-abinitio-app
+
+# Configure environment
+export EKS_CLUSTER_NAME="your-eks-cluster-name"
+export AWS_REGION="us-east-1"
+
+# Setup authentication
 ./scripts/setup-kubeconfig-okta.sh
-```
 
-**Test Commands:**
-```bash
-# Verify connection to EKS
-kubectl cluster-info
-
-# Check you can access the namespaces
-kubectl get namespace bi-abi-apps-dev
-kubectl get namespace abinitio-operator
-
-# List pods in your namespace
+# Verify connection
+kubectl get namespaces
 kubectl get pods -n bi-abi-apps-dev
-kubectl get pods -n abinitio-operator
 ```
 
-**Expected Output:**
-```
-✓ Successfully connected to EKS cluster
-Current context: arn:aws:eks:us-east-1:123456789012:cluster/your-cluster-name
-```
-
-### STEP 3: Test Python Code Locally
-
-Test the batch service on your local laptop before containerizing:
+### Step 2: Test Locally
 
 ```bash
+# Run local tests
 ./scripts/test-local.sh
+
+# Expected output: Health check passes, API calls succeed
 ```
 
-**What this does:**
-1. Creates Python virtual environment
-2. Installs dependencies from requirements.txt
-3. Runs the Python script using local kubeconfig
-4. Tests API health check
-5. Attempts to submit YAML to K8s API
-
-**Test Commands:**
-```bash
-# Manual test - activate venv first
-source venv/bin/activate
-
-# Test health check only (modify script to comment out K8s submission)
-python3 src/abinitio_batch_service.py
-
-# Check if runtime YAML is valid
-python3 -c "import yaml; yaml.safe_load(open('config/runtime.yaml'))"
-```
-
-**Expected Output:**
-```
-======================================================================
-Ab Initio Batch Service - CooperatingSystem Runtime Submission
-======================================================================
-Configuration:
-  API Base: https://abinitio-api-bi-dev
-  Operator Namespace: abinitio-operator
-  Runtime YAML: config/runtime.yaml
-======================================================================
-
-[STEP 1/3] Checking Ab Initio API health...
-Checking health endpoint: https://abinitio-api-bi-dev/health
-✓ Health check passed: Status 200
-
-[STEP 2/3] Loading CooperatingSystem runtime YAML...
-Loading runtime YAML from: config/runtime.yaml
-✓ Successfully loaded YAML
-  Kind: CooperatingSystem
-  Name: sample-cooperating-system
-
-[STEP 3/3] Submitting to Kubernetes API...
-✓ Using local kubeconfig file
-Submitting to Kubernetes API:
-  API Version: abinitio.io/v1
-  Kind: CooperatingSystem
-  Name: sample-cooperating-system
-  Namespace: abinitio-operator
-✓ Successfully created resource in K8s
-
-======================================================================
-✓ BATCH SERVICE COMPLETED SUCCESSFULLY
-======================================================================
-```
-
-### STEP 4: Customize Runtime YAML
-
-Edit the CooperatingSystem runtime configuration:
+### Step 3: Build and Push Docker Image
 
 ```bash
-# Edit the runtime YAML
-vim config/runtime.yaml
+# Configure AWS account
+export AWS_ACCOUNT_ID="123456789012"
+export AWS_REGION="us-east-1"
 
-# Or update the ConfigMap directly
-vim k8s/configmap.yaml
-```
-
-**Test Command:**
-```bash
-# Validate YAML syntax
-python3 -c "import yaml; print(yaml.safe_load(open('config/runtime.yaml')))"
-
-# Apply ConfigMap to test
-kubectl apply -f k8s/configmap.yaml --dry-run=client
-```
-
-### STEP 5: Build and Push Docker Image to ECR
-
-Build the Docker image and push to Amazon ECR:
-
-```bash
+# Build and push to ECR
 ./scripts/build-and-push.sh
 ```
 
-**Manual Test Commands:**
-```bash
-# Test build locally first
-docker build -t abinitio-batch-service:test .
-
-# Run container locally to test
-docker run --rm \
-  -e ABINITIO_API_BASE=https://abinitio-api-bi-dev \
-  -e ABINITIO_OPERATOR_NAMESPACE=abinitio-operator \
-  -v ~/.kube:/root/.kube:ro \
-  -v $(pwd)/config:/app/config:ro \
-  abinitio-batch-service:test
-
-# Check image size
-docker images | grep abinitio-batch-service
-
-# Inspect image layers
-docker history abinitio-batch-service:test
-```
-
-**Expected Output:**
-```
-========================================
-Build and Push Docker Image to ECR
-========================================
-[1/5] Checking prerequisites...
-✓ Docker found
-✓ AWS CLI found
-
-[2/5] Logging in to Amazon ECR...
-✓ Logged in to ECR
-
-[3/5] Ensuring ECR repository exists...
-✓ ECR repository already exists
-
-[4/5] Building Docker image...
-✓ Docker image built
-
-[5/5] Pushing image to ECR...
-✓ Image pushed to ECR
-
-========================================
-Build and push completed!
-========================================
-Image URI: 123456789012.dkr.ecr.us-east-1.amazonaws.com/abinitio-batch-service:latest
-```
-
-### STEP 6: Update Job Manifest with Image URI
-
-Update the Kubernetes Job with your ECR image URI:
+### Step 4: Update Kubernetes Manifests
 
 ```bash
-# Get your image URI
+# Get your ECR image URI
 IMAGE_URI="123456789012.dkr.ecr.us-east-1.amazonaws.com/abinitio-batch-service:latest"
 
-# Update the Job manifest
+# Update job manifest
 sed -i '' "s|<YOUR_ECR_REGISTRY>/abinitio-batch-service:latest|${IMAGE_URI}|g" k8s/abinitio-batch-job.yaml
+sed -i '' "s|<YOUR_ECR_REGISTRY>/abinitio-batch-service:latest|${IMAGE_URI}|g" k8s/job-templates/*.yaml
+
+# Update IAM role ARN in rbac.yaml
+sed -i '' "s|ACCOUNT_ID|${AWS_ACCOUNT_ID}|g" k8s/rbac.yaml
 ```
 
-**Test Command:**
-```bash
-# Verify the manifest is valid
-kubectl apply -f k8s/abinitio-batch-job.yaml --dry-run=client
-
-# Check all manifests
-kubectl apply -f k8s/ --dry-run=client
-```
-
-### STEP 7: Deploy to EKS
-
-Deploy the batch job to EKS cluster:
+### Step 5: Deploy to EKS
 
 ```bash
+# Deploy RBAC, ConfigMaps, and Job
 ./scripts/deploy-to-eks.sh
+
+# Monitor job execution
+kubectl logs -f -l app=abinitio-batch-service -n bi-abi-apps-dev
 ```
 
-**Expected Output:**
-```
-========================================
-Deploy Ab Initio Batch Job to EKS
-========================================
+## Detailed Setup Guide
 
-[1/6] Verifying kubectl connection...
-✓ Connected to cluster
+### Environment Variables
 
-[2/6] Verifying namespace exists...
-✓ Namespace bi-abi-apps-dev exists
+The application uses these environment variables (configured in ConfigMap):
 
-[3/6] Applying RBAC resources...
-✓ RBAC resources applied
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ABINITIO_API_BASE` | Ab Initio API base URL | `https://abinitio-api-bi-abi-apps-dev.cluster` |
+| `OPERATION` | Operation to perform | `submit` |
+| `JOB_SPEC_PATH` | Path to job specification YAML | `/app/config/job_spec.yaml` |
+| `JOB_NAME` | Job name for cancel/status operations | `` |
+| `POLL` | Enable status polling | `false` |
+| `POLL_INTERVAL` | Seconds between status checks | `10` |
+| `MAX_POLL_ATTEMPTS` | Max polling attempts | `60` |
+| `DB_HOST` | Database host | From ConfigMap |
+| `DB_PORT` | Database port | From ConfigMap |
+| `DB_NAME` | Database name | From ConfigMap |
+| `DB_PASSWORD` | Database password | From Secret |
+| `S3_BUCKET` | S3 bucket name | From ConfigMap |
+| `IAM_ROLE_ARN` | IAM role for AWS access | From ServiceAccount |
 
-[4/6] Applying ConfigMap...
-✓ ConfigMap applied
+### Testing Each Operation
 
-[5/6] Cleaning up existing job...
-✓ No existing job to delete
-
-[6/6] Deploying batch job...
-✓ Batch job deployed
-
-========================================
-Deployment completed!
-========================================
-```
-
-### STEP 8: Monitor and Verify Job Execution
-
-**Monitor the Job:**
-```bash
-# Watch job status
-kubectl get jobs -n bi-abi-apps-dev -w
-
-# Get job details
-kubectl describe job abinitio-batch-job -n bi-abi-apps-dev
-
-# Check job completion
-kubectl get job abinitio-batch-job -n bi-abi-apps-dev -o jsonpath='{.status.succeeded}'
-```
-
-**View Pod Status:**
-```bash
-# List pods for the job
-kubectl get pods -n bi-abi-apps-dev -l job=abinitio-batch-job
-
-# Get pod name
-POD_NAME=$(kubectl get pods -n bi-abi-apps-dev -l job=abinitio-batch-job -o jsonpath='{.items[0].metadata.name}')
-
-# Describe pod
-kubectl describe pod $POD_NAME -n bi-abi-apps-dev
-```
-
-**View Logs:**
-```bash
-# Follow logs in real-time
-kubectl logs -n bi-abi-apps-dev -l job=abinitio-batch-job --follow
-
-# Or get logs from specific pod
-kubectl logs -n bi-abi-apps-dev $POD_NAME
-
-# Get logs from previous run (if pod restarted)
-kubectl logs -n bi-abi-apps-dev $POD_NAME --previous
-```
-
-**Expected Log Output:**
-```
-======================================================================
-Ab Initio Batch Service - CooperatingSystem Runtime Submission
-======================================================================
-Configuration:
-  API Base: https://abinitio-api-bi-dev
-  Operator Namespace: abinitio-operator
-  Runtime YAML: /app/config/runtime.yaml
-======================================================================
-
-[STEP 1/3] Checking Ab Initio API health...
-✓ Health check passed: Status 200
-
-[STEP 2/3] Loading CooperatingSystem runtime YAML...
-✓ Successfully loaded YAML
-
-[STEP 3/3] Submitting to Kubernetes API...
-✓ Successfully created resource in K8s
-
-======================================================================
-✓ BATCH SERVICE COMPLETED SUCCESSFULLY
-======================================================================
-```
-
-### STEP 9: Verify Resource in Ab Initio Operator Namespace
-
-Check that the CooperatingSystem resource was created in the abinitio-operator namespace:
+#### Health Check
 
 ```bash
-# List CooperatingSystem resources
-kubectl get cooperatingsystems -n abinitio-operator
+# Apply health check job
+kubectl apply -f k8s/job-templates/health-check-job.yaml
 
-# Get specific resource
-kubectl get cooperatingsystem sample-cooperating-system -n abinitio-operator -o yaml
+# View logs
+kubectl logs -f job/abinitio-health-check -n bi-abi-apps-dev
 
-# Describe the resource
-kubectl describe cooperatingsystem sample-cooperating-system -n abinitio-operator
-
-# Check operator logs
-kubectl logs -n abinitio-operator -l app=abinitio-operator --tail=50
+# Expected output:
+# ======================================================================
+# OPERATION: Health Check
+# ======================================================================
+# [API] Health Check: GET https://abinitio-api-bi-abi-apps-dev.cluster/health
+# ✓ Health check passed: 200
+# ✓ OPERATION COMPLETED SUCCESSFULLY
 ```
 
-**Test Commands:**
-```bash
-# Check if resource exists
-kubectl get cooperatingsystem sample-cooperating-system -n abinitio-operator -o jsonpath='{.metadata.name}'
-
-# Get resource status
-kubectl get cooperatingsystem sample-cooperating-system -n abinitio-operator -o jsonpath='{.status}'
-```
-
-## Troubleshooting
-
-### Issue: Cannot connect to EKS cluster
+#### Submit Job
 
 ```bash
-# Re-run kubeconfig setup
-./scripts/setup-kubeconfig-okta.sh
+# Update job specification in configmap.yaml
+vim k8s/configmap.yaml
 
-# Verify AWS credentials
-aws sts get-caller-identity
+# Apply ConfigMap and Job
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/abinitio-batch-job.yaml
 
-# Check kubectl config
-kubectl config current-context
-kubectl config get-contexts
+# Monitor logs
+kubectl logs -f -l operation=submit -n bi-abi-apps-dev
+
+# Expected output:
+# ======================================================================
+# OPERATION: Submit Job
+# ======================================================================
+# [1/2] Performing health check...
+# ✓ Health check passed: 200
+# [2/2] Submitting job...
+# [API] Submit Job: POST https://abinitio-api-bi-abi-apps-dev.cluster/abinitio/jobs
+# ✓ Job submitted successfully
+#   Job ID: job-12345
+#   Status: RUNNING
 ```
 
-### Issue: Health check fails
+#### Cancel Job
 
 ```bash
-# Test API endpoint manually
-curl -v https://abinitio-api-bi-dev/health
+# Edit cancel job manifest with job name
+export JOB_NAME="sample-abinitio-job"
+sed -i '' "s|<JOB_NAME_TO_CANCEL>|${JOB_NAME}|g" k8s/job-templates/cancel-job.yaml
 
-# Check if you can resolve DNS
-nslookup abinitio-api-bi-dev
+# Apply cancel job
+kubectl apply -f k8s/job-templates/cancel-job.yaml
 
-# Test from within cluster
-kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- curl https://abinitio-api-bi-dev/health
+# View logs
+kubectl logs -f job/abinitio-cancel-job -n bi-abi-apps-dev
 ```
 
-### Issue: Permission denied when submitting to abinitio-operator namespace
+#### Get Job Status (with Polling)
 
 ```bash
-# Check RBAC resources
-kubectl get sa abinitio-batch-sa -n bi-abi-apps-dev
-kubectl get role abinitio-operator-writer -n abinitio-operator
-kubectl get rolebinding abinitio-batch-operator-access -n abinitio-operator
+# Edit status job manifest with job name
+export JOB_NAME="sample-abinitio-job"
+sed -i '' "s|<JOB_NAME_TO_CHECK>|${JOB_NAME}|g" k8s/job-templates/status-job.yaml
 
-# Describe role to see permissions
-kubectl describe role abinitio-operator-writer -n abinitio-operator
+# Apply status job with polling enabled
+kubectl apply -f k8s/job-templates/status-job.yaml
 
-# Check if ServiceAccount has proper bindings
-kubectl describe rolebinding abinitio-batch-operator-access -n abinitio-operator
+# View logs (will poll every 10 seconds)
+kubectl logs -f job/abinitio-status-job -n bi-abi-apps-dev
+
+# Expected output:
+# ======================================================================
+# OPERATION: Get Job Status
+# ======================================================================
+# Polling enabled: Will check status every 10s (max 60 attempts)
+# [Attempt 1/60]
+# [API] Get Job Status: GET https://abinitio-api-bi-abi-apps-dev.cluster/abinitio/jobs/sample-abinitio-job
+# ✓ Job status retrieved
+#   Job: sample-abinitio-job
+#   Status: RUNNING
+#   Progress: 45%
+# Waiting 10s before next check...
 ```
 
-### Issue: Job fails with ImagePullBackOff
+## Integration with Infrastructure Repository
+
+This application repo contains only application code. Configuration is managed separately in the Infrastructure repository.
+
+### Copy Templates to Infrastructure Repo
 
 ```bash
-# Check if image exists in ECR
-aws ecr describe-images --repository-name abinitio-batch-service --region us-east-1
+# In infrastructure repository
+cd <infrastructure-repo>
 
-# Verify image URI in Job manifest
-kubectl get job abinitio-batch-job -n bi-abi-apps-dev -o jsonpath='{.spec.template.spec.containers[0].image}'
+# Create directory structure
+mkdir -p k8s/abinitio-batch-service argocd
 
-# Check ECR permissions
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
+# Copy templates from application repo
+cp <app-repo>/infrastructure-templates/values-dev.yaml k8s/abinitio-batch-service/
+cp <app-repo>/infrastructure-templates/argocd-application.yaml argocd/abinitio-batch-service.yaml
 ```
 
-### Issue: Pod stuck in pending state
+### Update values-dev.yaml
+
+Edit the following in `values-dev.yaml`:
+
+```yaml
+image:
+  repository: docker-appimage-bi-snp-ss-prod-us-east-1
+  tag: cmi_prem:202510061127  # Your deployed image tag
+
+database:
+  host: "teradata-db.cluster.local"
+  name: "abinitio_dev_db"
+  secrets:
+    passwordSecretName: "db-credentials"
+
+s3:
+  bucket: "abinitio-dev-bucket"
+
+iam:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/abinitio-batch-service-role"
+
+paths:
+  projectRoot: "/opt/abinitio/projects"
+  graphsDir: "/opt/abinitio/projects/graphs"
+```
+
+### Deploy with ArgoCD
 
 ```bash
-# Check pod events
-kubectl describe pod $POD_NAME -n bi-abi-apps-dev
+# Apply ArgoCD application
+kubectl apply -f argocd/abinitio-batch-service.yaml
 
-# Check node resources
-kubectl top nodes
+# Sync application
+argocd app sync abinitio-batch-service
 
-# Check if there are any resource quotas
-kubectl get resourcequota -n bi-abi-apps-dev
+# Watch deployment
+argocd app get abinitio-batch-service --refresh
 ```
 
-### View Job History
+## Monitoring and Troubleshooting
+
+### View Job Status
 
 ```bash
 # List all jobs
 kubectl get jobs -n bi-abi-apps-dev
 
-# List all pods including completed
-kubectl get pods -n bi-abi-apps-dev --show-all
+# Get job details
+kubectl describe job abinitio-submit-job -n bi-abi-apps-dev
 
-# Delete completed job
-kubectl delete job abinitio-batch-job -n bi-abi-apps-dev
+# View logs
+kubectl logs -f -l app=abinitio-batch-service -n bi-abi-apps-dev
 ```
 
-## Cleanup
+### Check Pod Status
 
 ```bash
-# Delete the job
-kubectl delete job abinitio-batch-job -n bi-abi-apps-dev
+# List pods
+kubectl get pods -n bi-abi-apps-dev -l app=abinitio-batch-service
 
-# Delete ConfigMap
-kubectl delete configmap abinitio-runtime-config -n bi-abi-apps-dev
+# Describe pod
+POD_NAME=$(kubectl get pods -n bi-abi-apps-dev -l operation=submit -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod $POD_NAME -n bi-abi-apps-dev
 
-# Delete RBAC resources
-kubectl delete -f k8s/rbac.yaml
+# Get pod logs
+kubectl logs $POD_NAME -n bi-abi-apps-dev --follow
+```
 
-# Delete CooperatingSystem resource
-kubectl delete cooperatingsystem sample-cooperating-system -n abinitio-operator
+### Common Issues
 
-# Remove local virtual environment
-rm -rf venv
+**Issue: ImagePullBackOff**
+```bash
+# Check image exists in ECR
+aws ecr describe-images --repository-name abinitio-batch-service --region us-east-1
+
+# Verify image URI in job manifest
+kubectl get job abinitio-submit-job -n bi-abi-apps-dev -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+**Issue: API Health Check Fails**
+```bash
+# Test API endpoint manually
+curl -v https://abinitio-api-bi-abi-apps-dev.cluster/health
+
+# Check DNS resolution
+kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- nslookup abinitio-api-bi-abi-apps-dev.cluster
+```
+
+**Issue: Permission Denied**
+```bash
+# Check ServiceAccount
+kubectl get sa abinitio-batch-sa -n bi-abi-apps-dev -o yaml
+
+# Check IAM role annotation
+kubectl get sa abinitio-batch-sa -n bi-abi-apps-dev -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+
+# Check RBAC
+kubectl describe role abinitio-batch-role -n bi-abi-apps-dev
+kubectl describe rolebinding abinitio-batch-binding -n bi-abi-apps-dev
 ```
 
 ## Development Workflow
 
-### Quick Test Cycle
+### Local Development
 
-1. Make code changes to `src/abinitio_batch_service.py`
-2. Test locally: `./scripts/test-local.sh`
-3. Build and push: `./scripts/build-and-push.sh`
-4. Deploy: `./scripts/deploy-to-eks.sh`
-5. Monitor: `kubectl logs -n bi-abi-apps-dev -l job=abinitio-batch-job --follow`
+```bash
+# Make code changes
+vim src/abinitio_batch_service.py
 
-### Update Runtime YAML
+# Test locally
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+export ABINITIO_API_BASE="https://abinitio-api-bi-abi-apps-dev.cluster"
+export OPERATION="health"
+python3 src/abinitio_batch_service.py
+```
 
-1. Edit `k8s/configmap.yaml`
-2. Apply: `kubectl apply -f k8s/configmap.yaml`
-3. Redeploy job: `./scripts/deploy-to-eks.sh`
+### Build and Deploy
 
-## Security Notes
+```bash
+# Build new image
+docker build -t abinitio-batch-service:$(git rev-parse --short HEAD) .
 
-- Never commit credentials or secrets to the repository
-- Use AWS Secrets Manager or Kubernetes Secrets for sensitive data
-- Ensure Okta OIDC tokens have appropriate expiration
-- Review RBAC permissions regularly
-- Use least privilege principle for ServiceAccount permissions
+# Push to ECR
+./scripts/build-and-push.sh
+
+# Update infrastructure repo with new tag
+# Commit and push - ArgoCD will auto-sync
+```
+
+## Security Best Practices
+
+1. **Never commit secrets** to repository
+2. **Use AWS Secrets Manager or Kubernetes Secrets** for sensitive data
+3. **Enable IRSA** (IAM Roles for Service Accounts) for AWS access
+4. **Use least privilege** RBAC permissions
+5. **Enable network policies** to restrict traffic
+6. **Scan Docker images** for vulnerabilities
+7. **Rotate credentials** regularly
+
+## Cleanup
+
+```bash
+# Delete jobs
+kubectl delete job --all -n bi-abi-apps-dev
+
+# Delete ConfigMaps
+kubectl delete configmap abinitio-app-config abinitio-job-spec -n bi-abi-apps-dev
+
+# Delete RBAC resources
+kubectl delete -f k8s/rbac.yaml
+
+# Delete ArgoCD application
+argocd app delete abinitio-batch-service
+```
 
 ## Next Steps
 
-- Add monitoring and alerting for job failures
-- Implement retry logic with exponential backoff
-- Add Prometheus metrics for observability
-- Set up automated testing in CI/CD pipeline
-- Configure job scheduling with CronJob if needed
+- [ ] Set up monitoring with Prometheus and Grafana
+- [ ] Add alerting for job failures
+- [ ] Implement retry logic with exponential backoff
+- [ ] Create CronJob for scheduled executions
+- [ ] Add integration tests
+- [ ] Set up CI/CD pipeline
+
+## Support
+
+For issues or questions:
+- Check the [infrastructure-templates/README.md](infrastructure-templates/README.md) for integration details
+- Review logs: `kubectl logs -f -l app=abinitio-batch-service -n bi-abi-apps-dev`
+- Contact: DevOps team or Ab Initio administrators
