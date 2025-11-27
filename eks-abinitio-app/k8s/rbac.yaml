@@ -1,0 +1,40 @@
+---
+# ServiceAccount for the batch job
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: abinitio-batch-sa
+  namespace: bi-abi-apps-dev
+  labels:
+    app: abinitio-batch-service
+
+---
+# Role with permissions to create/update resources in abinitio-operator namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: abinitio-operator-writer
+  namespace: abinitio-operator
+rules:
+- apiGroups: ["abinitio.io"]
+  resources: ["cooperatingsystems"]
+  verbs: ["get", "list", "create", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list"]
+
+---
+# RoleBinding to grant the ServiceAccount access to abinitio-operator namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: abinitio-batch-operator-access
+  namespace: abinitio-operator
+subjects:
+- kind: ServiceAccount
+  name: abinitio-batch-sa
+  namespace: bi-abi-apps-dev
+roleRef:
+  kind: Role
+  name: abinitio-operator-writer
+  apiGroup: rbac.authorization.k8s.io

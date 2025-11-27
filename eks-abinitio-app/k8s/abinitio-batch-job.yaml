@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: abinitio-batch-job
+  namespace: bi-abi-apps-dev
+  labels:
+    app: abinitio-batch-service
+    environment: dev
+spec:
+  # Job will retry up to 3 times on failure
+  backoffLimit: 3
+
+  # Remove completed jobs after 1 hour
+  ttlSecondsAfterFinished: 3600
+
+  template:
+    metadata:
+      labels:
+        app: abinitio-batch-service
+        job: abinitio-batch-job
+    spec:
+      # Service account with permissions to access K8s API and abinitio-operator namespace
+      serviceAccountName: abinitio-batch-sa
+
+      restartPolicy: OnFailure
+
+      containers:
+      - name: batch-service
+        # Replace with your actual image repository and tag
+        image: <YOUR_ECR_REGISTRY>/abinitio-batch-service:latest
+        imagePullPolicy: Always
+
+        # Environment variables
+        env:
+        - name: ABINITIO_API_BASE
+          value: "https://abinitio-api-bi-dev"
+        - name: ABINITIO_OPERATOR_NAMESPACE
+          value: "abinitio-operator"
+        - name: RUNTIME_YAML_PATH
+          value: "/app/config/runtime.yaml"
+
+        # Resource limits
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+
+        # Mount the runtime YAML as ConfigMap
+        volumeMounts:
+        - name: runtime-config
+          mountPath: /app/config
+          readOnly: true
+
+      # Volume definition
+      volumes:
+      - name: runtime-config
+        configMap:
+          name: abinitio-runtime-config
